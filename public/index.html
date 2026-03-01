@@ -4,642 +4,522 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AUTO.TCO — Avaliador de Carros Usados</title>
-<meta name="description" content="Calcula o TCO real a 6 anos de qualquer carro usado em Portugal. Cola o texto do anúncio, obtém análise completa com IA.">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚗</text></svg>">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<meta name="description" content="Calcula o custo total real de qualquer carro usado em Portugal. TCO a 6 anos com análise de IA.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%231e293b'/><text x='7' y='23' font-size='18' font-family='monospace' font-weight='bold' fill='%23d97706'>T</text></svg>">
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #f7f6f2; font-family: 'Courier New', Courier, monospace; font-size: 14px; }
-  ::selection { background: #fde68a; }
-  ::-webkit-scrollbar { width: 5px; }
-  ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  html{font-size:14px;-webkit-font-smoothing:antialiased}
+  body{background:#f4f3ef;font-family:'Courier New',Courier,monospace;color:#1e293b}
+  input,textarea,button{font-family:inherit}
+  ::selection{background:#fde68a}
+  ::-webkit-scrollbar{width:4px}
+  ::-webkit-scrollbar-thumb{background:#d1d5db;border-radius:4px}
+  input[type=range]{accent-color:#1e293b;cursor:pointer}
+  .lbl{font-size:10px;font-weight:800;letter-spacing:1.8px;text-transform:uppercase;color:#94a3b8}
 </style>
 </head>
 <body>
 <div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
 <script type="text/babel">
 const { useState, useCallback } = React;
 
-// ─── CLAUDE API ───────────────────────────────────────────────────────────────
+const INK="#1e293b",MUTED="#64748b",FAINT="#94a3b8",BORDER="#e2e8f0",SURF="#fff",AMBER="#d97706",F="'Courier New',Courier,monospace";
 
-const SYSTEM_PROMPT = `És um especialista em carros usados em Portugal.
-O utilizador cola texto de um anúncio (Standvirtual, OLX, CustoJusto).
-Devolve APENAS JSON válido, sem markdown, sem texto extra:
-{
-  "name": "Marca Modelo Versão",
-  "year": número,
-  "km": número,
-  "price": número (euros),
-  "fuel": "gasolina" | "diesel" | "gpl" | "hibrido" | "eletrico",
-  "seats": número (5 por defeito),
-  "boot": número (litros — estima pelo modelo se não indicado),
-  "tco6yr": número,
-  "monthlyTCO": número,
-  "residual": número,
-  "reliability": número 0–10,
-  "riskLevel": "low" | "medium" | "high",
-  "verdict": "1 frase de avaliação honesta",
-  "pros": ["até 3 pontos positivos"],
-  "cons": ["até 3 pontos negativos"],
-  "knownIssues": "problemas conhecidos deste modelo específico",
-  "dealer": "nome do stand ou Particular",
-  "warranty": "garantia mencionada ou null"
-}
-
-CÁLCULO TCO 6 ANOS (90 000 km adicionais):
-GPL:      0.85€/L × 7.0L/100km = 5 355€ + manutenção 2 600€ + IUC×6 720€  + IPO×3 120€
-Diesel:   1.55€/L × 5.5L/100km = 7 673€ + manutenção 3 800€ + IUC×6 1 200€ + IPO×3 120€
-Gasolina: 1.70€/L × 7.0L/100km = 10 710€ + manutenção 2 400€ + IUC×6 900€  + IPO×3 120€
-H�brido:  1.30€/L × 5.0L/100km = 5 850€ + manutenção 2 800€ + IUC×6 900€  + IPO×3 120€
-
-tco6yr = preço + combustível + manutenção + IUC×6 + IPO×3 − residual_2031
-monthlyTCO = tco6yr ÷ 72
-
-Residual 2031: estima pelo modelo, idade actual + 6 anos, km actual + 90 000.
-
-Fiabilidade (base por marca):
-Dacia/Toyota ≈ 9 | Honda/Mazda/Hyundai/Kia ≈ 8.5 | Skoda/VW/Nissan ≈ 7.5
-Renault/Ford/Seat/Mitsubishi ≈ 7 | Opel/Peugeot/Citroën/Fiat ≈ 6 | BMW/Mercedes/Audi ≈ 6
-Penalidades: motor Renault TCe 900cc −2.5 | caixas AL4/DP0 −2.5 | DPF com >150k km −1 | turbo diesel >200k km −1.5
-
-riskLevel: "low" se reliability ≥ 7 e km < 130k e idade < 9 anos
-           "high" se reliability < 5.5 ou km > 180k ou idade > 13 anos
-           "medium" caso contrário
-
-Se não conseguires identificar o carro: {"error": "motivo em português"}`;
-
-async function callClaude(text, url, apiKey) {
-  const content = url ? `URL do anúncio: ${url}\n\nTexto:\n${text}` : text;
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
-    },
-    body: JSON.stringify({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 1000,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: "user", content }],
-    }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error?.message || `Erro API ${res.status}`);
-  }
-  const data = await res.json();
-  const raw = (data.content?.[0]?.text || "").replace(/```[\w]*/g, "").replace(/```/g, "").trim();
-  const match = raw.match(/\{[\s\S]+\}/);
-  if (!match) throw new Error("Resposta inesperada — tenta novamente");
-  const parsed = JSON.parse(match[0]);
-  if (parsed.error) throw new Error(parsed.error);
-  return parsed;
-}
-
-// ─── HELPERS ─────────────────────────────────────────────────────────────────
-
-const FUEL_LABEL = { gasolina:"Gasolina", diesel:"Diesel", gpl:"GPL", hibrido:"Híbrido", eletrico:"Elétrico" };
-const FUEL_COLOR = {
-  gasolina: { bg:"#dbeafe", text:"#1d4ed8" },
-  diesel:   { bg:"#f1f5f9", text:"#475569" },
-  gpl:      { bg:"#d1fae5", text:"#065f46" },
-  hibrido:  { bg:"#fef9c3", text:"#854d0e" },
-  eletrico: { bg:"#ede9fe", text:"#6d28d9" },
+const FUEL_LABEL={gasolina:"Gasolina",diesel:"Diesel",gpl:"GPL",hibrido:"Híbrido",eletrico:"Elétrico"};
+const FUEL_S={
+  gasolina:{bg:"#eff6ff",c:"#2563eb",b:"#bfdbfe"},
+  diesel:  {bg:"#f8fafc",c:"#475569",b:"#e2e8f0"},
+  gpl:     {bg:"#f0fdf4",c:"#16a34a",b:"#bbf7d0"},
+  hibrido: {bg:"#fefce8",c:"#ca8a04",b:"#fef08a"},
+  eletrico:{bg:"#f5f3ff",c:"#7c3aed",b:"#ddd6fe"},
 };
-const RISK_COLOR = { low:"#059669", medium:"#d97706", high:"#dc2626" };
-const RISK_LABEL = { low:"RISCO BAIXO", medium:"RISCO MÉDIO", high:"RISCO ALTO" };
+const RISK_S={
+  low:   {c:"#16a34a",bg:"#f0fdf4",b:"#bbf7d0",label:"Risco baixo"},
+  medium:{c:"#d97706",bg:"#fffbeb",b:"#fde68a",label:"Risco médio"},
+  high:  {c:"#dc2626",bg:"#fef2f2",b:"#fecaca",label:"Risco alto"},
+};
 
-const scoreColor = n => n >= 72 ? "#d97706" : n >= 52 ? "#6366f1" : "#dc2626";
+const DEMO={
+  name:"Dacia Jogger TCe 110 Comfort",year:2022,km:48000,price:16500,
+  fuel:"gasolina",seats:7,boot:422,tco6yr:28640,monthlyTCO:398,residual:5200,
+  reliability:8.5,riskLevel:"low",
+  verdict:"Excelente custo-benefício para família — um dos TCO mais baixos do segmento em Portugal.",
+  pros:["7 lugares a preço de 5","Fiabilidade Dacia acima da média","Valor residual sólido"],
+  cons:["Motor TCe 110 sem grande entusiasmo","Interior básico vs concorrência","Sem opção híbrida neste motor"],
+  knownIssues:"Motor TCe 110 usa corrente (não correia) — mais robusto que o TCe 90. Historial positivo até 150k km.",
+  dealer:"Stand Lisboa Auto",warranty:"12 meses",_isDemo:true,
+};
 
-function ScoreRing({ score, size = 72 }) {
-  const r = (size - 8) / 2;
-  const circ = 2 * Math.PI * r;
-  const dash = (Math.max(0, Math.min(100, score)) / 100) * circ;
-  const color = scoreColor(score);
-  return (
-    <div style={{ position:"relative", width:size, height:size, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center" }}>
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ position:"absolute", transform:"rotate(-90deg)" }}>
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="#f1f5f9" strokeWidth={7}/>
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth={7}
+const SYSTEM_PROMPT=`És um especialista em carros usados em Portugal. O utilizador cola texto de um anúncio.
+Devolve APENAS JSON válido sem markdown:
+{"name":"Marca Modelo Versão","year":número,"km":número,"price":número,"fuel":"gasolina"|"diesel"|"gpl"|"hibrido"|"eletrico","seats":número,"boot":número,"tco6yr":número,"monthlyTCO":número,"residual":número,"reliability":número 0-10,"riskLevel":"low"|"medium"|"high","verdict":"1 frase honesta","pros":["até 3"],"cons":["até 3"],"knownIssues":"problemas conhecidos","dealer":"stand ou Particular","warranty":"garantia ou null"}
+TCO 6 anos (90000km): GPL 0.85x7L=5355+2600mnt+720IUC+120IPO | Diesel 1.55x5.5L=7673+3800+1200+120 | Gasolina 1.70x7L=10710+2400+900+120
+tco6yr=preco+combustivel+manutencao+IUC6+IPO3-residual2031 | monthlyTCO=tco6yr/72
+Fiabilidade: Dacia/Toyota~9 Honda/Mazda/Hyundai/Kia~8.5 Skoda/VW~7.5 Renault/Ford/Seat~7 Opel/PSA/Fiat~6 BMW/Mercedes~6
+Penalidades: TCe900-2.5 AL4/DP0-2.5 DPF>150k-1
+Se insuficiente: {"error":"motivo"}`;
+
+async function callClaude(text,url,key){
+  const content=url?`URL: ${url}\n\n${text}`:text;
+  const r=await fetch("https://api.anthropic.com/v1/messages",{
+    method:"POST",
+    headers:{"Content-Type":"application/json","x-api-key":key,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+    body:JSON.stringify({model:"claude-haiku-4-5-20251001",max_tokens:1000,system:SYSTEM_PROMPT,messages:[{role:"user",content}]}),
+  });
+  if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error?.message||`Erro ${r.status}`);}
+  const d=await r.json();
+  const raw=(d.content?.[0]?.text||"").replace(/```[\w]*/g,"").replace(/```/g,"").trim();
+  const m=raw.match(/\{[\s\S]+\}/);
+  if(!m)throw new Error("Resposta inesperada — tenta novamente");
+  const p=JSON.parse(m[0]);
+  if(p.error)throw new Error(p.error);
+  return p;
+}
+
+function score(car){
+  function n(v,mn,mx,hi=true){const c=Math.max(mn,Math.min(mx,v));return((hi?c-mn:mx-c)/(mx-mn))*10;}
+  const fp={gpl:.85,diesel:1.55,gasolina:1.70,hibrido:1.30}[car.fuel]??1.70;
+  const fc={gpl:7,diesel:5.5,gasolina:7,hibrido:5}[car.fuel]??7;
+  const dims={
+    tco:        n(car.tco6yr||26000,22000,35000,false),
+    price:      n(car.price||10000,3000,18000,false),
+    reliability:Math.max(0,Math.min(10,car.reliability??6)),
+    boot:       n(car.boot||400,280,800,true),
+    fuelCost:   n(90000/100*fc*fp,4000,12000,false),
+    residual:   n(car.residual||500,100,6000,true),
+    fuelType:   car.fuel==="gpl"||car.fuel==="eletrico"?10:car.fuel==="hibrido"?8:car.fuel==="diesel"?5:4,
+  };
+  const W={tco:3,price:2,reliability:2.5,boot:1,fuelCost:1.5,residual:1.5,fuelType:1};
+  const tw=Object.values(W).reduce((a,b)=>a+b,0);
+  return{total:Math.min(100,Math.round(Object.keys(W).reduce((s,k)=>s+(dims[k]??5)*W[k],0)/tw*10)),dims};
+}
+
+const onF=e=>e.target.style.borderColor=INK;
+const onB=e=>e.target.style.borderColor=BORDER;
+
+function Ring({s,size=72}){
+  const color=s>=72?AMBER:s>=52?INK:"#ef4444";
+  const r=(size-7)/2,circ=2*Math.PI*r,dash=(Math.max(0,Math.min(100,s))/100)*circ;
+  return(
+    <div style={{position:"relative",width:size,height:size,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{position:"absolute",transform:"rotate(-90deg)"}}>
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="#f1f5f9" strokeWidth={6}/>
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth={6}
           strokeDasharray={circ.toFixed(1)} strokeDashoffset={(circ-dash).toFixed(1)} strokeLinecap="round"/>
       </svg>
-      <span style={{ position:"relative", fontSize:18, fontWeight:800, color, fontFamily:"monospace" }}>{score}</span>
+      <span style={{position:"relative",fontSize:size>60?16:12,fontWeight:800,color,fontFamily:"monospace"}}>{s}</span>
     </div>
   );
 }
 
-function Bar({ label, value }) {
-  const pct = Math.max(0, Math.min(100, (value / 10) * 100));
-  const color = value >= 7 ? "#059669" : value >= 4.5 ? "#d97706" : "#dc2626";
-  return (
-    <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
-      <span style={{ fontSize:12, color:"#94a3b8", width:90, flexShrink:0 }}>{label}</span>
-      <div style={{ flex:1, height:5, background:"#f1f5f9", borderRadius:9, overflow:"hidden" }}>
-        <div style={{ width:`${pct}%`, height:"100%", background:color, borderRadius:9 }}/>
+function Bar({label,value}){
+  const pct=Math.max(0,Math.min(100,(value/10)*100));
+  const color=value>=7?"#16a34a":value>=4.5?AMBER:"#ef4444";
+  return(
+    <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:8}}>
+      <span style={{fontSize:11,color:FAINT,width:90,flexShrink:0}}>{label}</span>
+      <div style={{flex:1,height:3,background:"#f1f5f9",borderRadius:9,overflow:"hidden"}}>
+        <div style={{width:`${pct}%`,height:"100%",background:color,borderRadius:9}}/>
       </div>
-      <span style={{ fontSize:11, color:"#94a3b8", width:26, textAlign:"right", fontFamily:"monospace" }}>{value?.toFixed(1)}</span>
+      <span style={{fontSize:10,color:FAINT,width:24,textAlign:"right",fontFamily:"monospace"}}>{value?.toFixed?value.toFixed(1):value}</span>
     </div>
   );
 }
 
-// ─── SETTINGS DRAWER ─────────────────────────────────────────────────────────
+function Chip({bg,c,b,children}){
+  return <span style={{fontSize:10,padding:"3px 9px",borderRadius:99,background:bg,color:c,border:`1px solid ${b}`,fontWeight:700,whiteSpace:"nowrap"}}>{children}</span>;
+}
 
-function Settings({ apiKey, onSave, onClose }) {
-  const [key, setKey] = useState(apiKey || "");
-  const [show, setShow] = useState(false);
-  const valid = key.startsWith("sk-ant-");
-  const status = valid ? "valid" : key ? "invalid" : "empty";
-  const statusColor = { valid:"#059669", invalid:"#d97706", empty:"#94a3b8" }[status];
-  const statusMsg   = { valid:"Chave válida ✓", invalid:"Deve começar com sk-ant-", empty:"Sem chave configurada" }[status];
-
-  return (
-    <div style={{ position:"fixed", inset:0, zIndex:60, display:"flex", justifyContent:"flex-end" }}>
-      <div onClick={onClose} style={{ position:"absolute", inset:0, background:"rgba(15,23,42,0.3)", cursor:"pointer" }}/>
-      <div style={{ position:"relative", width:380, maxWidth:"92vw", background:"#fff", height:"100%", overflowY:"auto", boxShadow:"-8px 0 40px rgba(0,0,0,0.12)" }}>
-
-        <div style={{ padding:"20px 24px 16px", borderBottom:"1px solid #f1f5f9", display:"flex", justifyContent:"space-between", alignItems:"center", position:"sticky", top:0, background:"#fff", zIndex:1 }}>
+function Settings({apiKey,onSave,onClose}){
+  const [k,setK]=useState(apiKey||"");
+  const [show,setShow]=useState(false);
+  const valid=k.startsWith("sk-ant-");
+  return(
+    <div style={{position:"fixed",inset:0,zIndex:60,display:"flex",justifyContent:"flex-end"}}>
+      <div onClick={onClose} style={{position:"absolute",inset:0,background:"rgba(15,23,42,0.2)",cursor:"pointer"}}/>
+      <div style={{position:"relative",width:380,maxWidth:"92vw",background:SURF,height:"100%",overflowY:"auto",boxShadow:"-12px 0 40px rgba(0,0,0,0.08)"}}>
+        <div style={{padding:"20px 24px",borderBottom:`1px solid ${BORDER}`,display:"flex",justifyContent:"space-between",alignItems:"center",position:"sticky",top:0,background:SURF,zIndex:1}}>
           <div>
-            <div style={{ fontSize:16, fontWeight:800, color:"#1e293b" }}>DEFINIÇÕES</div>
-            <div style={{ fontSize:11, color:"#94a3b8", marginTop:2 }}>Chave API Anthropic</div>
+            <div style={{fontSize:14,fontWeight:800,color:INK}}>Definições</div>
+            <div style={{fontSize:11,color:FAINT,marginTop:2}}>Chave API Anthropic</div>
           </div>
-          <button onClick={onClose} style={{ background:"none", border:"none", fontSize:24, cursor:"pointer", color:"#94a3b8", lineHeight:1, padding:4 }}>×</button>
+          <button onClick={onClose} style={{background:"none",border:"none",fontSize:20,cursor:"pointer",color:FAINT,lineHeight:1,padding:4}}>×</button>
         </div>
-
-        <div style={{ padding:"24px" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12 }}>
-            <div style={{ width:8, height:8, borderRadius:"50%", background:statusColor, flexShrink:0 }}/>
-            <span style={{ fontSize:13, color:statusColor }}>{statusMsg}</span>
+        <div style={{padding:"24px"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14}}>
+            <div style={{width:7,height:7,borderRadius:"50%",background:valid?"#16a34a":k?"#d97706":"#e2e8f0"}}/>
+            <span style={{fontSize:12,color:valid?"#16a34a":k?AMBER:FAINT}}>
+              {valid?"Chave válida":k?"Formato inválido (sk-ant-...)":"Sem chave configurada"}
+            </span>
           </div>
-
-          <div style={{ position:"relative", marginBottom:12 }}>
-            <input
-              type={show ? "text" : "password"}
-              value={key}
-              onChange={e => setKey(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && valid && (onSave(key), onClose())}
+          <div style={{position:"relative",marginBottom:12}}>
+            <input type={show?"text":"password"} value={k} onChange={e=>setK(e.target.value)}
+              onKeyDown={e=>e.key==="Enter"&&valid&&(onSave(k),onClose())}
               placeholder="sk-ant-api03-..."
-              style={{ width:"100%", background:"#f8fafc", border:"1px solid #e2e8f0", borderRadius:8, padding:"12px 44px 12px 14px", fontSize:13, fontFamily:"'Courier New',monospace", outline:"none", color:"#1e293b" }}
-              onFocus={e => e.target.style.borderColor="#d97706"}
-              onBlur={e => e.target.style.borderColor="#e2e8f0"}
-            />
-            <button onClick={() => setShow(v => !v)} style={{ position:"absolute", right:12, top:"50%", transform:"translateY(-50%)", background:"none", border:"none", cursor:"pointer", fontSize:16, color:"#94a3b8", padding:0 }}>
-              {show ? "🙈" : "👁"}
+              style={{width:"100%",background:"#f8fafc",border:`1px solid ${BORDER}`,borderRadius:8,padding:"12px 60px 12px 14px",fontSize:12,outline:"none",color:INK}}
+              onFocus={onF} onBlur={onB}/>
+            <button onClick={()=>setShow(v=>!v)} style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",fontSize:11,color:FAINT,padding:0}}>
+              {show?"ocultar":"ver"}
             </button>
           </div>
-
-          <button
-            onClick={() => { if (valid) { onSave(key); onClose(); } }}
-            disabled={!valid}
-            style={{ width:"100%", background:valid?"#1e293b":"#e2e8f0", color:valid?"#fff":"#94a3b8", border:"none", borderRadius:8, padding:"13px", fontSize:13, fontWeight:800, cursor:valid?"pointer":"not-allowed", fontFamily:"'Courier New',monospace", marginBottom:24 }}>
-            GUARDAR
+          <button onClick={()=>{if(valid){onSave(k);onClose();}}} disabled={!valid}
+            style={{width:"100%",background:valid?INK:"#e2e8f0",color:valid?"#fff":FAINT,border:"none",borderRadius:8,padding:"12px",fontSize:12,fontWeight:800,cursor:valid?"pointer":"not-allowed",marginBottom:28}}>
+            Guardar chave
           </button>
-
-          <div style={{ background:"#f8fafc", border:"1px solid #e2e8f0", borderRadius:8, padding:"16px", marginBottom:16 }}>
-            <div style={{ fontSize:13, fontWeight:700, color:"#334155", marginBottom:10 }}>Como obter a chave</div>
-            <ol style={{ fontSize:13, color:"#64748b", lineHeight:2.1, paddingLeft:18 }}>
-              <li>Vai a <a href="https://console.anthropic.com" target="_blank" rel="noreferrer" style={{ color:"#d97706" }}>console.anthropic.com</a></li>
-              <li>Cria conta (grátis) ou faz login</li>
-              <li>Menu API Keys → Create Key</li>
-              <li>Copia e cola acima</li>
-            </ol>
-          </div>
-
-          <div style={{ background:"#fffbeb", border:"1px solid #fde68a", borderRadius:8, padding:"14px 16px", marginBottom:16 }}>
-            <div style={{ fontSize:13, fontWeight:700, color:"#92400e", marginBottom:6 }}>💰 Custo por análise</div>
-            <div style={{ fontSize:13, color:"#92400e", lineHeight:1.8 }}>
+          <div className="lbl" style={{marginBottom:10}}>Como obter a chave</div>
+          <ol style={{fontSize:12,color:MUTED,lineHeight:2.2,paddingLeft:18,marginBottom:24}}>
+            <li>Vai a <a href="https://console.anthropic.com" target="_blank" rel="noreferrer" style={{color:AMBER}}>console.anthropic.com</a></li>
+            <li>Cria conta (gratuita) ou faz login</li>
+            <li>API Keys &rarr; Create Key</li>
+            <li>Copia e cola acima</li>
+          </ol>
+          <div style={{background:"#fffbeb",border:"1px solid #fde68a",borderRadius:8,padding:"14px 16px",marginBottom:20}}>
+            <div className="lbl" style={{color:"#92400e",marginBottom:8}}>Custo por análise</div>
+            <div style={{fontSize:12,color:"#92400e",lineHeight:1.9}}>
               Usa o modelo <b>Claude Haiku</b> — o mais económico.<br/>
               Cada análise custa aproximadamente <b>$0.001</b><br/>
-              (cerca de 0.1 cêntimo — 1000 análises ≈ $1)
+              (1000 análises ≈ $1 dólar)
             </div>
           </div>
-
-          <div style={{ fontSize:12, color:"#94a3b8", lineHeight:1.8 }}>
-            🔒 A chave é guardada apenas no teu browser. Nunca passa pelos servidores desta aplicação — vai directamente para a API da Anthropic.
+          <div style={{fontSize:11,color:FAINT,lineHeight:1.8}}>
+            A chave é guardada apenas no teu browser (localStorage). Nunca passa pelos servidores desta aplicação.
           </div>
-
-          {apiKey && (
-            <button onClick={() => { onSave(""); onClose(); }}
-              style={{ marginTop:20, width:"100%", background:"none", border:"1px solid #fecaca", borderRadius:8, padding:"12px", fontSize:13, color:"#dc2626", cursor:"pointer", fontFamily:"'Courier New',monospace" }}>
-              Remover chave guardada
-            </button>
-          )}
+          {apiKey&&<button onClick={()=>{onSave("");onClose();}} style={{marginTop:24,width:"100%",background:"none",border:"1px solid #fecaca",borderRadius:8,padding:"11px",fontSize:12,color:"#dc2626",cursor:"pointer"}}>Remover chave guardada</button>}
         </div>
       </div>
     </div>
   );
 }
 
-// ─── RESULT CARD ─────────────────────────────────────────────────────────────
-
-function Result({ car, onReset }) {
-  const ft = FUEL_COLOR[car.fuel] || FUEL_COLOR.gasolina;
-  const rc = RISK_COLOR[car.riskLevel] || "#64748b";
-  const rl = RISK_LABEL[car.riskLevel] || "—";
-  const sc = scoreColor(car.score ?? 0);
-
-  // Simple weighted score (fixed weights, no UI)
-  const score = car.score;
-
-  return (
-    <div style={{ background:"#fff", border:"2px solid #1e293b", borderRadius:12, overflow:"hidden", marginBottom:20 }}>
-
-      {/* ── TOP BAND ── */}
-      <div style={{ background:"#1e293b", padding:"20px 22px", display:"flex", alignItems:"center", gap:18 }}>
-        <ScoreRing score={score} size={80} />
-        <div style={{ flex:1, minWidth:0 }}>
-          <div style={{ fontSize:17, fontWeight:800, color:"#fff", lineHeight:1.3, marginBottom:4 }}>{car.name}</div>
-          <div style={{ fontSize:13, color:"rgba(255,255,255,0.55)" }}>
-            {car.year} · {car.km ? (car.km/1000).toFixed(0)+"k km" : "—"} · {(car.price||0).toLocaleString("pt-PT")}€
-          </div>
-          <div style={{ display:"flex", gap:7, marginTop:8, flexWrap:"wrap" }}>
-            <span style={{ fontSize:11, padding:"3px 9px", borderRadius:99, background:ft.bg, color:ft.text, fontWeight:700 }}>
-              {FUEL_LABEL[car.fuel] || car.fuel}
-            </span>
-            <span style={{ fontSize:11, padding:"3px 9px", borderRadius:99, background:rc+"22", color:rc, fontWeight:700 }}>
-              ⬤ {rl}
-            </span>
-            {car.dealer && (
-              <span style={{ fontSize:11, padding:"3px 9px", borderRadius:99, background:"rgba(255,255,255,0.1)", color:"rgba(255,255,255,0.6)", fontWeight:600 }}>
-                {car.dealer}
-              </span>
-            )}
-          </div>
+function Result({car,onReset}){
+  const fs=FUEL_S[car.fuel]||FUEL_S.gasolina;
+  const rs=RISK_S[car.riskLevel]||RISK_S.medium;
+  const {total,dims}=score(car);
+  const sc=total>=72?AMBER:total>=52?INK:"#ef4444";
+  return(
+    <div>
+      {car._isDemo&&(
+        <div style={{background:"#fffbeb",border:"1px solid #fde68a",borderRadius:8,padding:"10px 14px",marginBottom:16,fontSize:12,color:"#92400e"}}>
+          <b>Exemplo demonstrativo</b> — dados fictícios para ilustrar a análise. Cola um anúncio real para a tua análise personalizada.
         </div>
-        <div style={{ textAlign:"right", flexShrink:0 }}>
-          <div style={{ fontSize:22, fontWeight:800, color:scoreColor(score), fontFamily:"monospace" }}>
-            {((car.tco6yr||0)/1000).toFixed(1)}k€
+      )}
+
+      {/* Header */}
+      <div style={{background:INK,borderRadius:10,padding:"24px",marginBottom:10}}>
+        <div style={{display:"flex",alignItems:"flex-start",gap:20,flexWrap:"wrap"}}>
+          <Ring s={total} size={80}/>
+          <div style={{flex:1,minWidth:180}}>
+            <div style={{fontSize:17,fontWeight:800,color:"#fff",lineHeight:1.3,marginBottom:6}}>{car.name}</div>
+            <div style={{fontSize:12,color:"rgba(255,255,255,0.4)",marginBottom:12}}>
+              {car.year} &middot; {car.km?(car.km/1000).toFixed(0)+"k km":"—"} &middot; {(car.price||0).toLocaleString("pt-PT")}&#8364;
+            </div>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+              <Chip bg={fs.bg} c={fs.c} b={fs.b}>{FUEL_LABEL[car.fuel]||car.fuel}</Chip>
+              <Chip bg={rs.bg} c={rs.c} b={rs.b}>{rs.label}</Chip>
+              {car.dealer&&<Chip bg="rgba(255,255,255,0.07)" c="rgba(255,255,255,0.45)" b="rgba(255,255,255,0.1)">{car.dealer}</Chip>}
+            </div>
           </div>
-          <div style={{ fontSize:12, color:"rgba(255,255,255,0.45)", marginTop:2 }}>TCO 6 anos</div>
-          <div style={{ fontSize:16, fontWeight:700, color:"rgba(255,255,255,0.8)", marginTop:6, fontFamily:"monospace" }}>
-            {car.monthlyTCO||"—"}€/mês
+          <div style={{textAlign:"right",flexShrink:0}}>
+            <div style={{fontSize:28,fontWeight:800,color:sc,fontFamily:"monospace",lineHeight:1}}>{((car.tco6yr||0)/1000).toFixed(1)}k&#8364;</div>
+            <div style={{fontSize:11,color:"rgba(255,255,255,0.3)",marginTop:4}}>TCO 6 anos</div>
+            <div style={{fontSize:18,fontWeight:700,color:"rgba(255,255,255,0.65)",marginTop:10,fontFamily:"monospace"}}>{car.monthlyTCO||"—"}&#8364;<span style={{fontSize:11,fontWeight:400}}>/mês</span></div>
           </div>
         </div>
       </div>
 
-      {/* ── BODY ── */}
-      <div style={{ padding:"20px 22px" }}>
+      {/* Metrics */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:10}}>
+        {[
+          {l:"Residual 2031",v:(car.residual||0).toLocaleString("pt-PT")+"€"},
+          {l:"Bagageira",    v:(car.boot||"—")+"L"},
+          {l:"Lugares",     v:car.seats||5},
+          {l:"Fiabilidade", v:(car.reliability||"—")+"/10",c:rs.c},
+          {l:"Garantia",    v:car.warranty||"—"},
+          {l:"Combustível", v:FUEL_LABEL[car.fuel]||car.fuel},
+        ].map(({l,v,c})=>(
+          <div key={l} style={{background:SURF,border:`1px solid ${BORDER}`,borderRadius:8,padding:"12px 14px"}}>
+            <div className="lbl" style={{marginBottom:6}}>{l}</div>
+            <div style={{fontSize:14,fontWeight:800,color:c||INK,fontFamily:"monospace"}}>{v}</div>
+          </div>
+        ))}
+      </div>
 
-        {/* Key numbers */}
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, marginBottom:20 }}>
-          {[
-            { l:"Residual 2031", v:(car.residual||0).toLocaleString("pt-PT")+"€" },
-            { l:"Boot",          v:(car.boot||"—")+"L" },
-            { l:"Lugares",       v:car.seats||5 },
-            { l:"Fiabilidade",   v:(car.reliability||"—")+"/10", c:rc },
-            { l:"Garantia",      v:car.warranty||"—" },
-            { l:"Ano",           v:car.year||"—" },
-          ].map(({ l, v, c }) => (
-            <div key={l} style={{ background:"#f8fafc", borderRadius:8, padding:"10px 12px" }}>
-              <div style={{ fontSize:10, color:"#94a3b8", marginBottom:4, textTransform:"uppercase", letterSpacing:"0.5px" }}>{l}</div>
-              <div style={{ fontSize:15, fontWeight:800, color:c||"#1e293b", fontFamily:"monospace" }}>{v}</div>
-            </div>
-          ))}
-        </div>
-
-        {/* Dimension bars */}
-        <div style={{ marginBottom:18 }}>
-          <div style={{ fontSize:10, fontWeight:700, color:"#94a3b8", letterSpacing:"1px", textTransform:"uppercase", marginBottom:10 }}>Dimensões</div>
-          <Bar label="TCO 6 anos"   value={car._dims?.tco         ?? 5} />
-          <Bar label="Preço"        value={car._dims?.price        ?? 5} />
-          <Bar label="Fiabilidade"  value={car._dims?.reliability  ?? 5} />
-          <Bar label="Bagageira"    value={car._dims?.boot         ?? 5} />
-          <Bar label="Combustível"  value={car._dims?.fuelType     ?? 5} />
-          <Bar label="Valor residual" value={car._dims?.residual   ?? 5} />
-        </div>
-
-        {/* Verdict */}
-        {car.verdict && (
-          <div style={{ fontSize:14, color:"#475569", lineHeight:1.6, padding:"12px 14px", background:"#fffbeb", borderRadius:8, borderLeft:"3px solid #d97706", marginBottom:16 }}>
+      {/* Analysis */}
+      <div style={{background:SURF,border:`1px solid ${BORDER}`,borderRadius:10,padding:"20px",marginBottom:10}}>
+        <div className="lbl" style={{marginBottom:14}}>Avaliação por dimensão</div>
+        <Bar label="TCO 6 anos"     value={dims.tco}/>
+        <Bar label="Preço"          value={dims.price}/>
+        <Bar label="Fiabilidade"    value={dims.reliability}/>
+        <Bar label="Bagageira"      value={dims.boot}/>
+        <Bar label="Combustível"    value={dims.fuelType}/>
+        <Bar label="Valor residual" value={dims.residual}/>
+        {car.verdict&&(
+          <div style={{marginTop:18,paddingTop:18,borderTop:`1px solid ${BORDER}`,fontSize:13,color:MUTED,lineHeight:1.7,fontStyle:"italic"}}>
             "{car.verdict}"
           </div>
         )}
+      </div>
 
-        {/* Pros / Cons */}
-        {(car.pros?.length > 0 || car.cons?.length > 0) && (
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:16 }}>
-            {car.pros?.length > 0 && (
-              <div>
-                <div style={{ fontSize:10, fontWeight:700, color:"#059669", letterSpacing:"1px", textTransform:"uppercase", marginBottom:8 }}>Pontos positivos</div>
-                {car.pros.map((p, i) => (
-                  <div key={i} style={{ fontSize:13, color:"#334155", display:"flex", gap:7, marginBottom:5, lineHeight:1.4 }}>
-                    <span style={{ color:"#059669", fontWeight:700, flexShrink:0 }}>✓</span>{p}
-                  </div>
-                ))}
-              </div>
-            )}
-            {car.cons?.length > 0 && (
-              <div>
-                <div style={{ fontSize:10, fontWeight:700, color:"#dc2626", letterSpacing:"1px", textTransform:"uppercase", marginBottom:8 }}>Pontos negativos</div>
-                {car.cons.map((c, i) => (
-                  <div key={i} style={{ fontSize:13, color:"#334155", display:"flex", gap:7, marginBottom:5, lineHeight:1.4 }}>
-                    <span style={{ color:"#dc2626", fontWeight:700, flexShrink:0 }}>✗</span>{c}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Known issues */}
-        {car.knownIssues && (
-          <div style={{ fontSize:13, color:"#92400e", background:"#fffbeb", border:"1px solid #fde68a", padding:"10px 13px", borderRadius:8, marginBottom:16, lineHeight:1.5 }}>
-            ⚠ <b>Problemas conhecidos:</b> {car.knownIssues}
-          </div>
-        )}
-
-        {/* Actions */}
-        <div style={{ display:"flex", gap:10, paddingTop:16, borderTop:"1px solid #f1f5f9", flexWrap:"wrap" }}>
-          {car.sourceUrl && (
-            <a href={car.sourceUrl} target="_blank" rel="noreferrer"
-              style={{ fontSize:13, color:"#6366f1", textDecoration:"none", padding:"9px 16px", border:"1px solid #e0e7ff", borderRadius:7, background:"#eef2ff", fontWeight:600 }}>
-              ↗ ver anúncio original
-            </a>
+      {/* Pros / Cons */}
+      {(car.pros?.length>0||car.cons?.length>0)&&(
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
+          {car.pros?.length>0&&(
+            <div style={{background:SURF,border:`1px solid ${BORDER}`,borderRadius:10,padding:"16px 18px"}}>
+              <div className="lbl" style={{color:"#16a34a",marginBottom:12}}>Positivo</div>
+              {car.pros.map((p,i)=>(
+                <div key={i} style={{fontSize:12,color:INK,display:"flex",gap:8,marginBottom:7,lineHeight:1.5}}>
+                  <span style={{color:"#16a34a",fontWeight:800,flexShrink:0}}>+</span>{p}
+                </div>
+              ))}
+            </div>
           )}
-          <button onClick={onReset}
-            style={{ fontSize:13, color:"#fff", background:"#1e293b", border:"none", borderRadius:7, padding:"9px 18px", cursor:"pointer", fontFamily:"'Courier New',monospace", fontWeight:700, marginLeft:"auto" }}>
-            + NOVA ANÁLISE
-          </button>
+          {car.cons?.length>0&&(
+            <div style={{background:SURF,border:`1px solid ${BORDER}`,borderRadius:10,padding:"16px 18px"}}>
+              <div className="lbl" style={{color:"#ef4444",marginBottom:12}}>Negativo</div>
+              {car.cons.map((c,i)=>(
+                <div key={i} style={{fontSize:12,color:INK,display:"flex",gap:8,marginBottom:7,lineHeight:1.5}}>
+                  <span style={{color:"#ef4444",fontWeight:800,flexShrink:0}}>−</span>{c}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
+      )}
+
+      {/* Known issues */}
+      {car.knownIssues&&(
+        <div style={{background:"#fffbeb",border:"1px solid #fde68a",borderRadius:8,padding:"12px 16px",marginBottom:10,fontSize:12,color:"#92400e",lineHeight:1.6}}>
+          <b>Problemas conhecidos:</b> {car.knownIssues}
+        </div>
+      )}
+
+      {/* Actions */}
+      <div style={{display:"flex",gap:10,paddingTop:6,flexWrap:"wrap"}}>
+        {car.sourceUrl&&(
+          <a href={car.sourceUrl} target="_blank" rel="noreferrer"
+            style={{fontSize:12,color:INK,textDecoration:"none",padding:"10px 16px",border:`1px solid ${BORDER}`,borderRadius:7,background:SURF,fontWeight:600}}>
+            Ver anúncio original
+          </a>
+        )}
+        <button onClick={onReset}
+          style={{fontSize:12,color:"#fff",background:INK,border:"none",borderRadius:7,padding:"10px 22px",cursor:"pointer",fontWeight:700,marginLeft:"auto"}}>
+          Nova análise
+        </button>
       </div>
     </div>
   );
 }
 
-// ─── SCORE CALCULATION (local, fixed weights) ─────────────────────────────────
-
-function computeScore(car) {
-  const fp = { gpl:0.85, diesel:1.55, gasolina:1.70, hibrido:1.30 }[car.fuel] ?? 1.70;
-  const fc = { gpl:7.0,  diesel:5.5,  gasolina:7.0,  hibrido:5.0  }[car.fuel] ?? 7.0;
-  const fuelCostEst = 90000 / 100 * fc * fp;
-
-  function norm(v, mn, mx, hi = true) {
-    const c = Math.max(mn, Math.min(mx, v));
-    return ((hi ? c - mn : mx - c) / (mx - mn)) * 10;
-  }
-
-  const dims = {
-    tco:         norm(car.tco6yr   || 26000, 22000, 33000, false),
-    price:       norm(car.price    || 10000,  3000, 17000, false),
-    reliability: Math.max(0, Math.min(10, car.reliability ?? 6)),
-    boot:        norm(car.boot     || 400,     280,   750,  true),
-    fuelCost:    norm(fuelCostEst,             4000, 12000, false),
-    residual:    norm(car.residual || 500,      100,  5000, true),
-    fuelType:    car.fuel==="gpl"||car.fuel==="eletrico" ? 10 : car.fuel==="hibrido" ? 8 : car.fuel==="diesel" ? 5 : 4,
-  };
-
-  // Fixed weights for free version
-  const W = { tco:3, price:2, reliability:2.5, boot:1, fuelCost:1.5, residual:1.5, fuelType:1 };
-  const tw = Object.values(W).reduce((a,b) => a+b, 0);
-  const total = Math.min(100, Math.round(
-    Object.keys(W).reduce((s, k) => s + (dims[k] ?? 5) * W[k], 0) / tw * 10
-  ));
-  return { score: total, _dims: dims };
-}
-
-
-// ─── PRO BANNER ──────────────────────────────────────────────────────────────
-
-function ProBanner() {
-  const F = "'Courier New',Courier,monospace";
-  const features = [
-    { icon:"\u{1F4CB}", title:"Hist\u00f3rico de an\u00e1lises",    desc:"Todas as tuas pesquisas guardadas e organizadas" },
-    { icon:"\u2696\ufe0f",  title:"Compara\u00e7\u00e3o lado a lado",  desc:"Compara at\u00e9 4 carros em simult\u00e2neo numa tabela" },
-    { icon:"\u{1F39A}\ufe0f", title:"Pesos de avalia\u00e7\u00e3o", desc:"Ajusta o que importa mais \u2014 TCO, boot, fiabilidade..." },
-    { icon:"\u{1F4CC}", title:"Refer\u00eancias guardadas",    desc:"Marca carros como refer\u00eancia para comparar depois" },
-    { icon:"\u{1F916}", title:"Cr\u00e9ditos de IA inclu\u00eddos", desc:"Sem precisar de chave API \u2014 cr\u00e9ditos pr\u00e9-pagos" },
-    { icon:"\u{1F4CA}", title:"Relat\u00f3rio export\u00e1vel",     desc:"Exporta a compara\u00e7\u00e3o em PDF para partilhar" },
+function ProBanner(){
+  const features=[
+    {title:"Histórico de análises",    desc:"Pesquisas guardadas e organizadas por sessão"},
+    {title:"Comparação lado a lado",   desc:"Até 4 carros em simultâneo numa tabela detalhada"},
+    {title:"Pesos de avaliação",       desc:"Ajusta a importância de cada critério — TCO, boot, fiabilidade"},
+    {title:"Referências guardadas",    desc:"Marca carros como referência para comparar depois"},
+    {title:"Créditos de IA incluídos", desc:"Sem necessidade de chave API própria"},
+    {title:"Horizonte variável",       desc:"Calcula TCO a 2, 4, 6, 8 ou 10 anos"},
   ];
-
-  return (
-    <div style={{ marginTop:32, borderRadius:12, overflow:"hidden", border:"2px solid #1e293b" }}>
-
-      {/* Header */}
-      <div style={{ background:"#1e293b", padding:"24px 24px 20px", textAlign:"center" }}>
-        <div style={{ display:"inline-flex", alignItems:"center", gap:8, background:"#d97706", borderRadius:99, padding:"4px 14px", fontSize:10, fontWeight:800, color:"#fff", letterSpacing:"1.5px", textTransform:"uppercase", marginBottom:14 }}>
-          \u2736 DISPON\u00cdVEL BREVEMENTE
+  return(
+    <div style={{marginTop:40,borderRadius:10,overflow:"hidden",border:`1px solid ${BORDER}`}}>
+      <div style={{background:INK,padding:"28px"}}>
+        <div style={{display:"inline-block",background:AMBER,borderRadius:4,padding:"3px 10px",fontSize:9,fontWeight:800,color:"#fff",letterSpacing:"2px",textTransform:"uppercase",marginBottom:14}}>
+          Disponível brevemente
         </div>
-        <div style={{ fontSize:22, fontWeight:800, color:"#fff", marginBottom:6, fontFamily:F }}>
-          AUTO.TCO <span style={{ color:"#d97706" }}>PRO</span>
+        <div style={{fontSize:20,fontWeight:800,color:"#fff",marginBottom:8}}>
+          AUTO.TCO <span style={{color:AMBER}}>PRO</span>
         </div>
-        <div style={{ fontSize:13, color:"rgba(255,255,255,0.5)", lineHeight:1.7 }}>
-          A vers\u00e3o completa para quem compra carros a s\u00e9rio.<br/>
-          Sem API key pr\u00f3pria. Paga s\u00f3 o que usas.
+        <div style={{fontSize:12,color:"rgba(255,255,255,0.4)",lineHeight:1.8}}>
+          A versão completa para quem compra carros a sério.<br/>
+          Sem chave API própria. Paga apenas o que usas.
         </div>
       </div>
+      <div style={{background:SURF,padding:"24px"}}>
+        <div className="lbl" style={{marginBottom:14}}>O que inclui</div>
+        <div style={{border:`1px solid ${BORDER}`,borderRadius:8,overflow:"hidden",marginBottom:24}}>
+          {features.map(({title,desc},i)=>(
+            <div key={title} style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:0}}>
+              {i%2===0?(
+                <>
+                  <div style={{padding:"13px 16px",background:"#fafafa",borderBottom:i<features.length-2?`1px solid ${BORDER}`:"none",borderRight:`1px solid ${BORDER}`}}>
+                    <div style={{fontSize:12,fontWeight:700,color:INK,marginBottom:3}}>{title}</div>
+                    <div style={{fontSize:11,color:FAINT,lineHeight:1.5}}>{desc}</div>
+                  </div>
+                  {features[i+1]&&(
+                    <div style={{padding:"13px 16px",background:SURF,borderBottom:i<features.length-2?`1px solid ${BORDER}`:"none"}}>
+                      <div style={{fontSize:12,fontWeight:700,color:INK,marginBottom:3}}>{features[i+1].title}</div>
+                      <div style={{fontSize:11,color:FAINT,lineHeight:1.5}}>{features[i+1].desc}</div>
+                    </div>
+                  )}
+                </>
+              ):null}
+            </div>
+          )).filter(Boolean)}
+        </div>
 
-      {/* Features grid */}
-      <div style={{ background:"#fff", padding:"20px" }}>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:20 }}>
-          {features.map(({ icon, title, desc }) => (
-            <div key={title} style={{ display:"flex", gap:12, alignItems:"flex-start", padding:"12px 14px", background:"#f8fafc", borderRadius:8, border:"1px solid #f1f5f9" }}>
-              <span style={{ fontSize:22, flexShrink:0, lineHeight:1 }}>{icon}</span>
-              <div>
-                <div style={{ fontSize:12, fontWeight:700, color:"#1e293b", marginBottom:3 }}>{title}</div>
-                <div style={{ fontSize:11, color:"#94a3b8", lineHeight:1.5 }}>{desc}</div>
-              </div>
+        <div className="lbl" style={{marginBottom:14}}>Packs de créditos</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:20}}>
+          {[
+            {name:"Starter", qty:"50 análises", price:"2€", note:"para começar"},
+            {name:"Standard",qty:"200 análises",price:"6€", note:"uso regular"},
+            {name:"Pro",     qty:"600 análises",price:"12€",note:"melhor valor",highlight:true},
+          ].map(({name,qty,price,note,highlight})=>(
+            <div key={name} style={{border:`1px solid ${highlight?INK:BORDER}`,borderRadius:8,padding:"14px",textAlign:"center",background:highlight?"#f8fafc":SURF}}>
+              <div className="lbl" style={{marginBottom:8}}>{name}</div>
+              <div style={{fontSize:22,fontWeight:800,color:INK,fontFamily:"monospace",marginBottom:3}}>{price}</div>
+              <div style={{fontSize:11,color:FAINT,marginBottom:3}}>{qty}</div>
+              <div style={{fontSize:10,color:FAINT,fontStyle:"italic"}}>{note}</div>
             </div>
           ))}
         </div>
 
-        {/* Pricing teaser */}
-        <div style={{ background:"#fffbeb", border:"1px solid #fde68a", borderRadius:10, padding:"16px 20px", display:"flex", alignItems:"center", justifyContent:"space-between", gap:16, flexWrap:"wrap", marginBottom:14 }}>
-          <div>
-            <div style={{ fontSize:11, fontWeight:700, color:"#92400e", letterSpacing:"1px", textTransform:"uppercase", marginBottom:10 }}>Packs de cr\u00e9ditos</div>
-            <div style={{ display:"flex", gap:20, flexWrap:"wrap" }}>
-              {[
-                { label:"Starter",  credits:"50 an\u00e1lises",  price:"2\u20ac" },
-                { label:"Standard", credits:"200 an\u00e1lises", price:"6\u20ac" },
-                { label:"Pro",      credits:"600 an\u00e1lises", price:"12\u20ac" },
-              ].map(({ label, credits, price }) => (
-                <div key={label} style={{ textAlign:"center" }}>
-                  <div style={{ fontSize:11, color:"#92400e", fontWeight:700 }}>{label}</div>
-                  <div style={{ fontSize:16, color:"#1e293b", fontWeight:800, fontFamily:"monospace" }}>{price}</div>
-                  <div style={{ fontSize:10, color:"#94a3b8" }}>{credits}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-          <div style={{ textAlign:"center", flexShrink:0 }}>
-            <div style={{ fontSize:10, color:"#94a3b8", marginBottom:8 }}>Avisa-me quando estiver dispon\u00edvel</div>
-            <a href="mailto:?subject=AUTO.TCO Pro - quero acesso"
-              style={{ display:"inline-block", background:"#d97706", color:"#fff", borderRadius:8, padding:"11px 20px", fontSize:13, fontWeight:800, textDecoration:"none", fontFamily:"'Courier New',monospace" }}>
-              \u2709 Receber aviso
-            </a>
-          </div>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:14,flexWrap:"wrap",padding:"16px",background:"#f8fafc",borderRadius:8,border:`1px solid ${BORDER}`}}>
+          <span style={{fontSize:12,color:MUTED,lineHeight:1.7}}>Quer ser avisado quando a versão Pro estiver disponível?</span>
+          <a href="mailto:?subject=AUTO.TCO Pro - avisa-me quando estiver disponivel"
+            style={{display:"inline-block",background:INK,color:"#fff",borderRadius:7,padding:"10px 20px",fontSize:12,fontWeight:700,textDecoration:"none",whiteSpace:"nowrap"}}>
+            Receber aviso
+          </a>
         </div>
 
-        <div style={{ textAlign:"center", fontSize:11, color:"#cbd5e1" }}>
-          Vers\u00e3o gratuita: 1 an\u00e1lise de cada vez \u00b7 requer chave API Anthropic pr\u00f3pria
+        <div style={{marginTop:14,fontSize:11,color:FAINT,textAlign:"center"}}>
+          Versão gratuita: 1 análise de cada vez &middot; requer chave API Anthropic própria
         </div>
       </div>
     </div>
   );
 }
 
-// ─── MAIN APP ─────────────────────────────────────────────────────────────────
+function App(){
+  const [apiKey,setApiKey]=useState(()=>{try{return localStorage.getItem("atco_key")||"";}catch{return "";}});
+  const [showS,setShowS]=useState(false);
+  const saveKey=k=>{setApiKey(k);try{k?localStorage.setItem("atco_key",k):localStorage.removeItem("atco_key");}catch{}};
 
-function App() {
-  const [apiKey, setApiKey] = useState(() => { try { return localStorage.getItem("atco_key") || ""; } catch { return ""; } });
-  const [showSettings, setShowSettings] = useState(false);
+  const [text,setText]=useState("");
+  const [url,setUrl]=useState("");
+  const [loading,setLoading]=useState(false);
+  const [error,setError]=useState("");
+  const [result,setResult]=useState(null);
 
-  const saveKey = k => {
-    setApiKey(k);
-    try { k ? localStorage.setItem("atco_key", k) : localStorage.removeItem("atco_key"); } catch {}
-  };
+  const analyze=useCallback(async()=>{
+    if(!text.trim())return;
+    if(!apiKey){setShowS(true);return;}
+    setLoading(true);setError("");
+    try{
+      const data=await callClaude(text.trim(),url.trim(),apiKey);
+      setResult({...data,sourceUrl:url.trim()||null,monthlyTCO:data.monthlyTCO||Math.round((data.tco6yr||0)/72)});
+    }catch(e){setError(e.message);}
+    finally{setLoading(false);}
+  },[text,url,apiKey]);
 
-  const [text, setText]     = useState("");
-  const [url, setUrl]       = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError]   = useState("");
-  const [result, setResult] = useState(null);
+  const loadDemo=()=>{setResult({...DEMO});setError("");};
+  const reset=()=>{setResult(null);setText("");setUrl("");setError("");};
 
-  const analyze = useCallback(async () => {
-    if (!text.trim()) return;
-    if (!apiKey) { setShowSettings(true); return; }
-    setLoading(true); setError("");
-    try {
-      const data = await callClaude(text.trim(), url.trim(), apiKey);
-      const { score, _dims } = computeScore(data);
-      setResult({ ...data, score, _dims, sourceUrl: url.trim() || null, monthlyTCO: data.monthlyTCO || Math.round((data.tco6yr||0)/72) });
-    } catch(e) { setError(e.message); }
-    finally { setLoading(false); }
-  }, [text, url, apiKey]);
+  return(
+    <div style={{minHeight:"100vh",background:"#f4f3ef",paddingBottom:80}}>
 
-  const reset = () => { setResult(null); setText(""); setUrl(""); setError(""); };
-
-  const F = "'Courier New',Courier,monospace";
-
-  return (
-    <div style={{ minHeight:"100vh", background:"#f7f6f2", fontFamily:F, paddingBottom:80 }}>
-
-      {/* HEADER */}
-      <div style={{ background:"#fff", borderBottom:"2px solid #1e293b", padding:"14px 24px", display:"flex", alignItems:"center", justifyContent:"space-between", position:"sticky", top:0, zIndex:20 }}>
-        <div>
-          <div style={{ fontSize:20, fontWeight:800, color:"#1e293b" }}>AUTO<span style={{ color:"#d97706" }}>.</span>TCO</div>
-          <div style={{ fontSize:11, color:"#94a3b8", marginTop:3 }}>avaliador de carros usados · custo total a 6 anos · Portugal</div>
+      {/* Header */}
+      <div style={{background:SURF,borderBottom:`1px solid ${BORDER}`,padding:"14px 28px",display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:20}}>
+        <div style={{display:"flex",alignItems:"baseline",gap:10}}>
+          <div style={{fontSize:18,fontWeight:800,color:INK,letterSpacing:"-0.5px"}}>AUTO<span style={{color:AMBER}}>.</span>TCO</div>
+          <div style={{fontSize:11,color:FAINT}}>custo total de propriedade &middot; Portugal</div>
         </div>
-        <div style={{ display:"flex", alignItems:"center", gap:14 }}>
-          <div style={{ display:"flex", alignItems:"center", gap:7 }}>
-            <div style={{ width:8, height:8, borderRadius:"50%", background:apiKey?"#059669":"#cbd5e1" }}/>
-            <span style={{ fontSize:11, color:apiKey?"#059669":"#94a3b8" }}>{apiKey ? "API ligada" : "sem API"}</span>
+        <div style={{display:"flex",alignItems:"center",gap:16}}>
+          <div style={{display:"flex",alignItems:"center",gap:6}}>
+            <div style={{width:6,height:6,borderRadius:"50%",background:apiKey?"#16a34a":"#d1d5db"}}/>
+            <span style={{fontSize:11,color:apiKey?"#16a34a":FAINT}}>{apiKey?"API activa":"sem API"}</span>
           </div>
-          <button onClick={() => setShowSettings(true)}
-            style={{ background:"#f8fafc", border:"1px solid #e2e8f0", borderRadius:7, padding:"8px 16px", fontSize:13, cursor:"pointer", fontFamily:F, color:"#475569", fontWeight:600 }}>
-            ⚙ Definições
+          <button onClick={()=>setShowS(true)}
+            style={{background:"none",border:`1px solid ${BORDER}`,borderRadius:6,padding:"7px 14px",fontSize:11,cursor:"pointer",color:MUTED,fontWeight:600}}>
+            Definições
           </button>
         </div>
       </div>
 
-      <div style={{ maxWidth:720, margin:"0 auto", padding:"28px 20px" }}>
-
-        {/* RESULT */}
-        {result ? (
-          <Result car={result} onReset={reset} />
-        ) : (
+      <div style={{maxWidth:700,margin:"0 auto",padding:"32px 20px"}}>
+        {result?(
+          <Result car={result} onReset={reset}/>
+        ):(
           <>
-            {/* INPUT CARD */}
-            <div style={{ background:"#fff", border:"2px solid #1e293b", borderRadius:12, padding:"24px", marginBottom:20 }}>
-              <div style={{ fontSize:11, fontWeight:800, color:"#64748b", letterSpacing:"1.5px", textTransform:"uppercase", marginBottom:16 }}>
-                Analisar Anúncio
-              </div>
-
-              {/* URL */}
-              <input
-                type="url"
-                value={url}
-                onChange={e => setUrl(e.target.value)}
-                placeholder="URL do anúncio (opcional) — standvirtual.com, olx.pt, custojusto.pt..."
-                disabled={loading}
-                style={{ width:"100%", background:"#f8fafc", border:"1px solid #e2e8f0", borderRadius:8, padding:"12px 14px", fontSize:13, fontFamily:F, outline:"none", color:"#1e293b", marginBottom:12 }}
-                onFocus={e => e.target.style.borderColor="#d97706"}
-                onBlur={e => e.target.style.borderColor="#e2e8f0"}
-              />
-
-              {/* Textarea */}
-              <textarea
-                value={text}
-                onChange={e => setText(e.target.value)}
-                disabled={loading}
-                placeholder={"Cola aqui o texto do anúncio...\n\nEx: Dacia Jogger 1.0 ECO-G 100cv GPL · 2023 · 94 000 km · 15 900 € · 7 lugares · Stand XYZ, Porto · Garantia 12 meses · Livro revisões completo"}
-                style={{ width:"100%", minHeight:140, background:"#f8fafc", border:"1px solid #e2e8f0", borderRadius:8, padding:"13px 14px", fontSize:13, fontFamily:F, outline:"none", color:"#1e293b", resize:"vertical", lineHeight:1.6, display:"block", opacity:loading ? 0.6 : 1 }}
-                onFocus={e => e.target.style.borderColor="#d97706"}
-                onBlur={e => e.target.style.borderColor="#e2e8f0"}
-              />
-
-              <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginTop:14, gap:14 }}>
-                <div style={{ fontSize:12, color:"#94a3b8", lineHeight:1.9 }}>
-                  Abre o anúncio → <b style={{ color:"#64748b" }}>Ctrl+A</b> → <b style={{ color:"#64748b" }}>Ctrl+C</b> → cola aqui.<br/>
-                  O URL é opcional — serve para guardar o link no resultado.
+            {/* Input */}
+            <div style={{background:SURF,border:`1px solid ${BORDER}`,borderRadius:10,padding:"24px",marginBottom:14,boxShadow:"0 1px 3px rgba(0,0,0,0.04)"}}>
+              <div className="lbl" style={{marginBottom:16}}>Analisar anúncio</div>
+              <input type="url" value={url} onChange={e=>setUrl(e.target.value)} disabled={loading}
+                placeholder="URL do anúncio (opcional) — standvirtual.com, olx.pt, custojusto.pt"
+                style={{width:"100%",background:"#f8fafc",border:`1px solid ${BORDER}`,borderRadius:7,padding:"11px 14px",fontSize:12,outline:"none",color:INK,marginBottom:10}}
+                onFocus={onF} onBlur={onB}/>
+              <textarea value={text} onChange={e=>setText(e.target.value)} disabled={loading}
+                placeholder={"Cola aqui o texto do anúncio...\n\nEx: Dacia Jogger 1.0 ECO-G GPL 100cv · 2022 · 48 000 km · 16 500€\n7 lugares · Stand Lisboa Auto · Garantia 12 meses · Livro revisões completo"}
+                style={{width:"100%",minHeight:130,background:"#f8fafc",border:`1px solid ${BORDER}`,borderRadius:7,padding:"12px 14px",fontSize:12,outline:"none",color:INK,resize:"vertical",lineHeight:1.7,display:"block",opacity:loading?.6:1}}
+                onFocus={onF} onBlur={onB}/>
+              <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginTop:14,gap:14}}>
+                <div style={{fontSize:11,color:FAINT,lineHeight:1.9}}>
+                  Abre o anúncio &rarr; <b style={{color:MUTED}}>Ctrl+A</b> &rarr; <b style={{color:MUTED}}>Ctrl+C</b> &rarr; cola aqui.<br/>
+                  O URL é opcional — guarda o link no resultado.
                 </div>
-                <button
-                  onClick={analyze}
-                  disabled={loading || !text.trim()}
-                  style={{ background:!text.trim()||loading?"#94a3b8":"#1e293b", color:"#fff", border:"none", borderRadius:8, padding:"13px 24px", fontSize:13, fontWeight:800, cursor:!text.trim()||loading?"not-allowed":"pointer", fontFamily:F, whiteSpace:"nowrap", flexShrink:0 }}>
-                  {loading ? "A ANALISAR..." : "ANALISAR →"}
+                <button onClick={analyze} disabled={loading||!text.trim()}
+                  style={{background:!text.trim()||loading?"#d1d5db":INK,color:"#fff",border:"none",borderRadius:7,padding:"11px 22px",fontSize:12,fontWeight:800,cursor:!text.trim()||loading?"not-allowed":"pointer",whiteSpace:"nowrap",flexShrink:0}}>
+                  {loading?"A analisar...":"Analisar"}
                 </button>
               </div>
-
-              {!apiKey && (
-                <div style={{ marginTop:14, fontSize:13, color:"#d97706", background:"#fffbeb", border:"1px solid #fde68a", borderRadius:8, padding:"11px 14px" }}>
-                  ⚙ Precisas de uma API key Anthropic para usar a app.{" "}
-                  <button onClick={() => setShowSettings(true)} style={{ background:"none", border:"none", color:"#d97706", fontWeight:800, cursor:"pointer", fontFamily:F, fontSize:13, textDecoration:"underline", padding:0 }}>
-                    Configurar agora →
-                  </button>
+              {!apiKey&&(
+                <div style={{marginTop:14,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10,background:"#fffbeb",border:"1px solid #fde68a",borderRadius:7,padding:"11px 14px"}}>
+                  <span style={{fontSize:12,color:"#92400e"}}>Precisas de uma chave API Anthropic para analisar.</span>
+                  <div style={{display:"flex",gap:8}}>
+                    <button onClick={loadDemo} style={{fontSize:11,color:MUTED,background:SURF,border:`1px solid ${BORDER}`,borderRadius:6,padding:"6px 12px",cursor:"pointer",fontWeight:600}}>
+                      Ver exemplo
+                    </button>
+                    <button onClick={()=>setShowS(true)} style={{fontSize:11,color:"#fff",background:"#92400e",border:"none",borderRadius:6,padding:"6px 12px",cursor:"pointer",fontWeight:700}}>
+                      Configurar API
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
 
-            {/* ERROR */}
-            {error && (
-              <div style={{ background:"#fef2f2", border:"1px solid #fecaca", borderRadius:8, padding:"14px 16px", fontSize:13, color:"#dc2626", marginBottom:20, lineHeight:1.6 }}>
-                ⚠ {error}
+            {error&&(
+              <div style={{background:"#fef2f2",border:"1px solid #fecaca",borderRadius:7,padding:"12px 16px",fontSize:12,color:"#dc2626",marginBottom:14,lineHeight:1.6}}>
+                {error}
               </div>
             )}
 
-            {/* EMPTY STATE */}
-            {!error && (
-              <div style={{ textAlign:"center", padding:"48px 20px", color:"#94a3b8" }}>
-                <div style={{ fontSize:48, marginBottom:16 }}>🚗</div>
-                <div style={{ fontSize:17, fontWeight:800, color:"#334155", marginBottom:12 }}>Como funciona</div>
-                <div style={{ fontSize:13, lineHeight:2.2 }}>
-                  1. Abre o anúncio no Standvirtual, OLX ou CustoJusto<br/>
-                  2. <b style={{ color:"#475569" }}>Ctrl+A</b> para seleccionar → <b style={{ color:"#475569" }}>Ctrl+C</b> para copiar<br/>
-                  3. Cola acima e clica <b style={{ color:"#475569" }}>ANALISAR →</b><br/>
-                  <span style={{ fontSize:12, color:"#cbd5e1" }}>A IA extrai os dados e calcula o custo real a 6 anos</span>
-                </div>
-
-                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12, maxWidth:460, margin:"28px auto 0" }}>
-                  {[
-                    { icon:"📊", label:"Score de 0–100", desc:"baseado em TCO, fiabilidade e custo" },
-                    { icon:"💶", label:"Custo real/mês", desc:"todos os custos incluídos a 6 anos" },
-                    { icon:"⚠️", label:"Problemas", desc:"issues conhecidos do modelo específico" },
-                  ].map(({ icon, label, desc }) => (
-                    <div key={label} style={{ background:"#fff", border:"1px solid #e2e8f0", borderRadius:10, padding:"16px 14px", textAlign:"center" }}>
-                      <div style={{ fontSize:26, marginBottom:8 }}>{icon}</div>
-                      <div style={{ fontSize:12, fontWeight:700, color:"#334155", marginBottom:4 }}>{label}</div>
-                      <div style={{ fontSize:11, color:"#94a3b8", lineHeight:1.5 }}>{desc}</div>
-                    </div>
-                  ))}
-                </div>
+            {/* How it works */}
+            <div style={{textAlign:"center",padding:"36px 20px 20px"}}>
+              <div style={{fontSize:16,fontWeight:800,color:INK,marginBottom:10}}>Como funciona</div>
+              <div style={{fontSize:12,color:FAINT,lineHeight:2.3,marginBottom:28}}>
+                1. Abre o anúncio no Standvirtual, OLX ou CustoJusto<br/>
+                2. <b style={{color:MUTED}}>Ctrl+A</b> &rarr; <b style={{color:MUTED}}>Ctrl+C</b> para copiar<br/>
+                3. Cola acima e clica <b style={{color:MUTED}}>Analisar</b>
               </div>
-            )}
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,maxWidth:480,margin:"0 auto 20px"}}>
+                {[
+                  {label:"Score 0–100",    desc:"TCO, fiabilidade, bagageira e combustível"},
+                  {label:"Custo real/mês", desc:"Todos os custos a 6 anos divididos por 72"},
+                  {label:"Problemas",      desc:"Issues conhecidos do modelo analisado"},
+                ].map(({label,desc})=>(
+                  <div key={label} style={{background:SURF,border:`1px solid ${BORDER}`,borderRadius:8,padding:"16px 12px",textAlign:"center"}}>
+                    <div style={{fontSize:12,fontWeight:800,color:INK,marginBottom:5}}>{label}</div>
+                    <div style={{fontSize:10,color:FAINT,lineHeight:1.6}}>{desc}</div>
+                  </div>
+                ))}
+              </div>
+              <button onClick={loadDemo} style={{background:"none",border:`1px solid ${BORDER}`,borderRadius:7,padding:"9px 18px",fontSize:11,color:MUTED,cursor:"pointer",fontWeight:600}}>
+                Ver análise de exemplo
+              </button>
+            </div>
 
-            {/* PRO PROMO */}
-            <ProBanner />
+            <ProBanner/>
           </>
         )}
       </div>
 
-      {showSettings && <Settings apiKey={apiKey} onSave={saveKey} onClose={() => setShowSettings(false)} />}
+      {showS&&<Settings apiKey={apiKey} onSave={saveKey} onClose={()=>setShowS(false)}/>}
     </div>
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
 </script>
 </body>
 </html>
